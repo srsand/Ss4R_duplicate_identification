@@ -1,0 +1,826 @@
+---
+title: "Rainbow Trout Homeologs"
+author: "simen/torfinn"
+date: "31 juli 2017"
+output: pdf_document
+---
+
+
+```{r libs_and_data, warnings=F, messages=F}
+
+# setting directory 
+setdir='~/Dropbox/Work/Projects/Rainbow_trout/RainbowTrout_Ss4R_identification_RefSeq/'
+
+library(dplyr); library(tidyr); library(readr)
+
+# selfblasts longest protein pr gene: -outfmt "6 qseqid sseqid pident length mismatch gapopen qstart qend qlen sstart send slen evalue bitscore", -evalue 1e-10
+ssaBP = read_delim('selfblastp/GCF_000233375.1_ICSASG_v2_protein.longestCDS.faa.selfblastp_1e-10_alltargets.out.gz', delim = '\t', 
+                   col_names = c('qseqid', 'sseqid', 'pident', 'length', 'mismatch', 'gapopen', 'qstart', 'qend', 'qlen', 'sstart', 'send', 'slen', 'evalue', 'bitscore'))
+omyBP = read_delim('selfblastp/GCF_002163495.1_rotein.longestCDS.fa.selfblastp_1e-10_alltargets.out.gz', delim = '\t', 
+                   col_names = c('qseqid', 'sseqid', 'pident', 'length', 'mismatch', 'gapopen', 'qstart', 'qend', 'qlen', 'sstart', 'send', 'slen', 'evalue', 'bitscore'))
+dim(ssaBP); dim(omyBP)
+
+
+# require(data.table, quietly = T)
+# require(ape, quietly = T);
+# require(seqinr, quietly = T, warn.conflicts = F)
+# library(parallel, quietly = T) # supports parallel computing
+# library(xtable, quietly = T)
+# suppressWarnings(library(plyr, quietly = T, warn.conflicts = F))
+# suppressWarnings(require(gdata, quietly = T, warn.conflicts = F))
+# source('/mnt/users/srsand/Salmon/Scripts_and_workflows/Rscript/Rfunctions/Filter_blast.R') # read.blast, clean.blast
+# # options(width=200, xtable.type='latex', xtable.html.table.attributes="")
+
+```
+
+
+```{r compare length of peps}
+
+difflength.blast=function(blast.out, min.pident=90){
+  blast <- blast.out
+  blast.order <- arrange(blast,desc(bitscore))
+  blast.besthit = distinct(blast.order, qseqid, .keep_all = TRUE)
+  blast.besthit = distinct(blast.besthit, sseqid, .keep_all = TRUE)
+  list(besthit_df = blast.besthit, hitlength_diff = filter(blast.besthit, pident>=min.pident)$qlen - filter(blast.besthit, pident>=min.pident)$slen)
+}
+
+
+ssa.difflength = difflength.blast(ssaBP)
+omy.difflength = difflength.blast(omyBP)
+
+
+
+# needed to compare number of 'best blast hits' above a certain identity threshold
+ssa.hitnb = nrow(ssa.difflength$besthit_df)
+omy.hitnb = nrow(omy.difflength$besthit_df)
+
+ 
+```
+
+```{r gff, echo=FALSE}
+
+#reading in features from ncbi
+omyFeat = read_delim('ftp://ftp.ncbi.nlm.nih.gov/genomes/refseq/vertebrate_other/Oncorhynchus_mykiss/latest_assembly_versions/GCF_002163495.1_Omyk_1.0/GCF_002163495.1_Omyk_1.0_feature_table.txt.gz', '\t')
+ssaFeat = read_delim('ftp://ftp.ncbi.nlm.nih.gov/genomes/refseq/vertebrate_other/Salmo_salar/latest_assembly_versions/GCF_000233375.1_ICSASG_v2/GCF_000233375.1_ICSASG_v2_feature_table.txt.gz', '\t')
+ssaFeat$chromosome <- as.integer(sub('ssa', '', ssaFeat$chromosome)) # ssa feature table has a 'ssa' tag before chromosome number in chromosome collumn, but omyk has not!!
+
+# remove genes on unlpaced scaffolds
+omyFeat = filter(omyFeat, seq_type %in% 'chromosome')
+ssaFeat = filter(ssaFeat, seq_type %in% 'chromosome')
+
+# now we need to load in the synteny tables and arrange the lookup tables in correct format relative to the blast results....check the blast
+parse_feat = function(feat=omyFeat, species.tag='omy'){
+  data_frame(Feature_type=feat$`# feature`, gene_id = feat$GeneID, GenBank = feat$product_accession, chr = paste(species.tag, feat$chromosome, sep=''), chr.num = feat$chromosome, gene.start = feat$start, gene.end = feat$start)
+}
+
+
+## GB table should look like this:
+# > head(GB)
+#            gene_id        GenBank   chr chr.num gene.start gene.end
+# 1  gene0:106560212 XP_014016259.1 ssa01       1       5501    62139
+# 5  gene1:106607996 XP_014064670.1 ssa01       1     160437   198815
+# 24 gene2:106601976 XP_014053633.1 ssa01       1     228330   231471
+# 27 gene3:106560213 XP_013982194.1 ssa01       1     296031   297111
+# 32 gene4:106566220 XP_013993534.1 ssa01       1     306942   310878
+# 34 gene5:106571988 XP_014005005.1 ssa01       1     331369   346454
+
+omyFeat_parse = parse_feat(omyFeat, 'omy')
+ssaFeat_parse = parse_feat(ssaFeat, 'ssa')
+
+```
+
+
+```{r homeolog_links}
+
+## change homeolog-link table to Omyk!
+
+# get main homeolog regions
+#homlinks = read.table('/mnt/users/torfn/Projects/Rainbowtrout/omyV6/Homeolog_blocks_Oct2016_OmyV6_arms.txt', sep='\t')
+ssa_dupregions = read_delim('homeolog_bands/Homeolog_blocks_Jan2015_v2-ICSASG_v2.txt', '\t', col_names = F)
+ssa_dupregions <- ssa_dupregions[,-10] # remove redundant collumn
+omy_dupregions = read_delim('homeolog_bands/Homeolog_blocks_Oct2016_OmyV6_arms.txt', '\t', col_names = F)
+omy_dupregions$X2 <- sub('_', '-', omy_dupregions$X2)
+head(ssa_dupregions)
+head(omy_dupregions)
+
+parse_homlinks = function(homeolog_block_df=ssa_dupregions, species.tag='ssa'){
+  homlinks = homeolog_block_df
+  dim(homlinks)
+  homlinks$X3 <- as.numeric(sub(species.tag,'', homlinks$X3))
+  homlinks$X6 <- as.numeric(sub(species.tag,'', homlinks$X6))
+  homlinks$chr.match <- paste(homlinks$X3, homlinks$X6, sep='-')
+  
+  head(homlinks)
+  hl1=homlinks[c(2:5,11)]; colnames(hl1)<- paste('X', 1:5, sep='')
+  hl1$chr.block = sapply(strsplit(as.character(homlinks$X2), '-'), '[', 1)
+  hl2 = homlinks[c(2,6:8,11)]; colnames(hl2)<- paste('X', 1:5, sep='')
+  hl2$chr.block = sapply(strsplit(as.character(homlinks$X2), '-'), '[', 2)
+  homlinks.long = rbind(hl1,hl2 )
+  head(homlinks.long)
+  colnames(homlinks.long) <- c('X1', 'X2', 'X3', 'X4', 'X5', 'chr.block')
+  # fix start number =0 V3 and srop == V4
+  start.stop.corrected = t(apply(homlinks.long, 1, function(i) { as.numeric(sort(i[3:4]))}))
+  homlinks.long$X3 <- start.stop.corrected[,1]
+  homlinks.long$X4 <- start.stop.corrected[,2]
+  homlinks.long
+}
+
+# making homlink tables...used to look up blast hits later
+ssaHomlinks = parse_homlinks(ssa_dupregions, species.tag = 'ssa')
+omyHomlinks = parse_homlinks(omy_dupregions, species.tag = 'omy')
+
+# sanity check - sum up bp's in homlinks
+ssaHomlinks.bps <- sum(abs(ssaHomlinks$X3-ssaHomlinks$X4)) # 2.1 MBp in homeolog blocks
+omyHomlinks.bps <- sum(abs(omyHomlinks$X3-omyHomlinks$X4)) # 1.73 MBp in homeolog blocks
+
+# > homlinks.long
+#               V1 V2        V3        V4    V5 chr.block
+# 1       1p-9qa_1  1         0   6843616   1-9        1p
+# 2      1p-9qa_2a  1   6953722   8602432   1-9        1p
+# 3       1p-9qa_x  1   8768777   9096203   1-9        1p
+# 4      1p-9qa_2b  1   9166964  44457745   1-9        1p
+# 5      1p-9qa_2c  1  44474054  45500129   1-9        1p
+# 6     1qa-18qa_1  1  45861387  71986516  1-18       1qa
+# 
+
+
+# Add homlink info to feature table for filtering of 'no-block blast hits downstream'
+
+ssaFeat_CDS = filter(ssaFeat_parse, Feature_type%in%'CDS' & !is.na(GenBank))
+omyFeat_CDS = filter(omyFeat_parse, Feature_type%in%'CDS' & !is.na(GenBank))
+
+
+check_homlinks = function(feat.table=ssaFeat_CDS, homlinks.table=ssaHomlinks){
+  
+  feat.check = data.frame();HL.check = data.frame(); block=list()
+  for(i in unique(feat.table$chr.num)){ #
+    if(is.na(i)) next()
+    cat('\nChecking chromosome...', i)
+     feat.check = feat.table[feat.table$chr.num %in% i,]
+     HL.check = homlinks.table[homlinks.table$X2 %in% i, ]
+     block[[i]] = apply(feat.check, 1, function(n){ 
+                        res = as.character(HL.check$X5[HL.check$X3 < as.numeric(n[6])  & HL.check$X4 > as.numeric(n[7])])
+                        if(length(res)>1)  { return(list(chr=i, block='multiblockhits', gene_id=as.character(n[3]))) }
+                        if(length(res)==0) { return(list(chr=i, block='No-block', gene_id=as.character(n[3]))) }
+                        if(length(res)==1) { return(list(chr=i, block=res, gene_id=as.character(n[3]))) }
+                        else { return(list(chr=i, block=NA, gene_id=as.character(n[3])))}
+                        }
+                        )
+    }
+  
+  block.df = data.frame(chr = unlist(sapply(block, function(i) sapply(i, '[[', 1))),
+                        block = unlist(sapply(block, function(i) sapply(i, '[[', 2))), 
+                        GenBank = unlist(sapply(block, function(i) sapply(i, '[[', 3))), stringsAsFactors = F)
+  block.df
+}
+
+ssaHomlinks_summary = check_homlinks(feat.table = ssaFeat_CDS, homlinks.table = ssaHomlinks)
+omyHomlinks_summary = check_homlinks(feat.table = omyFeat_CDS, homlinks.table = omyHomlinks)
+
+
+
+summarize_homlink = function(GB=ssaHomlinks_summary){
+    # barplot(t(ddply(GB, .(chr.num), function(i) sum(i$block=='No-block')/nrow(i)))[2,], names.arg = 1:29, las=3, ylim=c(0,1))
+  print(table(GB$block)[grep('No-block', names(table(GB$block)))])
+  cat('Total number of IN-block genes:', sum(table(GB$block)[-grep('multiblocks|No-block', names(table(GB$block)))]), '\n')
+  print(table(GB$block)[grep('No-block', names(table(GB$block)))]/sum(table(GB$block))) # % genes in feature table that is not in a homeolog block
+  cat('Total homeolog blocks:', length(table(GB$block)[grep('multiblocks|No-block', names(table(GB$block)), invert = T)])) # 
+}
+
+summarize_homlink(ssaHomlinks_summary) # ~4% genes not in homeolog block
+summarize_homlink(omyHomlinks_summary) # ~9% genes not in homeolog block
+
+
+```
+
+```{r filter_blast_and_make_BLASTP_classification_of_homeologs, echo=FALSE}
+
+#########################################
+# READ AND FILTER Self BLAST-HOMEOTABLE #
+#########################################
+
+# fix omyk blast IDs
+omyBP$qseqid <- substr(omyBP$qseqid, 5, 18)
+omyBP$sseqid <- substr(omyBP$sseqid, 5, 18)
+
+# add dup block info to feature table:
+ssaFeat_CDS = left_join(ssaFeat_CDS, ssaHomlinks_summary, by='GenBank')
+ssaFeat_CDS <- select(ssaFeat_CDS, -one_of('chr.y'))
+omyFeat_CDS = left_join(omyFeat_CDS, omyHomlinks_summary, by='GenBank')
+omyFeat_CDS <- select(omyFeat_CDS, -one_of('chr.y'))
+
+parse_selfblast=function(blast.table=ssaBP, feat.table=ssaFeat_CDS){
+    bl = blast.table; GB = feat.table
+    bl = arrange(bl, desc(bitscore))
+    
+    cat('\nTotal blast hits:', nrow(bl))
+    
+    # removing selfhits
+    bl = bl[bl$qseqid != bl$sseqid,]
+    cat('\nBlast hits after removing selfhits:', nrow(bl))
+    
+    # add chr and position data
+    bl$chr1 = GB$chr.num[match(bl$qseqid, GB$GenBank)]
+    bl$chr2 = GB$chr.num[match(bl$sseqid, GB$GenBank)]
+    
+    # remove genes without chr
+    bl = bl[!is.na(bl$chr1), ]
+    bl = bl[!is.na(bl$chr2), ]
+    cat('\nBlast hits - chromosome anchored genes:', nrow(bl))
+    
+    # Add ordered chrom match collumn
+    sort.and.paste = function(a, b, sep='-', paste.col.a = a, paste.col.b=b) {
+        stopifnot(is.integer(a), is.integer(b), length(a)==length(b))
+        result = character(length(a))
+        swap = a > b
+        result[!swap] = paste(paste.col.a[!swap], paste.col.b[!swap], sep=sep)
+        result[swap] = paste(paste.col.b[swap], paste.col.a[swap], sep=sep)
+        result
+    }
+    
+
+    bl$chr.match  <- sort.and.paste(a=bl$chr1, b=bl$chr2)
+    bl$qseqid.chromstart = GB$gene.start[match(bl$qseqid, GB$GenBank)]
+    bl$sseqid.chromstart = GB$gene.start[match(bl$sseqid, GB$GenBank)]
+   
+    
+    # remove dulpicated best hits
+    filter.reciprocal=function(bt){
+      qm <- paste(bt$qseqid, bt$sseqid)
+      sm <- paste(bt$sseqid, bt$qseqid)
+      if(length(qm)==0|length(sm)==0) { print('paste error'); return()}
+      res = !sm %in% qm  
+      ma = match(qm, sm)
+      ma.r = 1:nrow(bt)
+      idx = !is.na(ma)
+      res = ma.r[idx][ma[idx]>ma.r[idx]] 
+      res = c(res, which(is.na(ma)==T)) # add rows with unique qseqid and sseqid combos (not duplicated..)
+      bt[res, ]
+    }
+    
+    bl = filter.reciprocal(bl)
+    cat('\nBlast hits - after removing redundant rows with reciprocal hits:', nrow(bl))
+    
+    
+    # remove hits outside homlinks:
+    #library(naturalsort)
+    GB = GB[! GB$block %in% c(NA, 'multiblockhits', 'No-block'), ]
+    bl$homlink.qseqid <- GB$block[match(bl$qseqid, GB$GenBank)]
+    bl$homlink.sseqid <- GB$block[match(bl$sseqid, GB$GenBank)]
+    
+    
+    
+    
+    # removing blast hits NOT IN BLOCK
+    
+    bl = filter(bl , !is.na(homlink.qseqid) & !is.na(homlink.sseqid))
+    cat('\nBlast hits - ONLY hits within homeo-blocks:', nrow(bl))
+    
+    
+    ## keep only same block:
+    bl = bl[which(bl$homlink.qseqid == bl$homlink.sseqid), ]
+    cat('\nBlast hits - ONLY hits within SAME homeo-blocks:', nrow(bl))
+    
+    # REMOVE Hits on SAME CHROMOSOME if not in a intra-chromosomal dup 
+    # keep only identical block but check that if you split block name the be can match these to the two chromsome numbers....
+    
+    cat('\nRemoving', sum(bl$chr1 == bl$chr2), 'intrachromosomal blast hits - could remove real intrachromosomal dups')
+    bl = bl[bl$chr1 != bl$chr2, ]
+    
+    ## MAKE A CHOICE ##
+    
+    # order data by bitscore:
+    #bl =  bl[order(bl$bitscore, decreasing = T), ]
+    # order data by pident:
+    #bl =  bl[order(bl$pident, decreasing = T), ]
+    
+    # order data by product of pident and bitscore:
+    bl$PidentBit = bl$pident*bl$bitscore
+    bl =  bl[order(bl$PidentBit, decreasing = T), ]
+    
+    
+    
+    # calc coverage of blast hits
+    cov.calc=function(blast.table, seq=c('qseqid', 'sseqid')){
+      dat=blast.table
+      if(seq=='qseqid') return(as.numeric((dat$length-dat$gapopen)/dat$qlen))
+      if(seq=='sseqid') return(as.numeric((dat$length-dat$gapopen)/dat$slen))
+    }
+    
+    bl$q.cov = round(cov.calc(bl, 'qseqid'), 2)
+    bl$s.cov = round(cov.calc(bl, 'sseqid'), 2)
+    cat('\nFinal selfblast table - filtered on homeolog block hits', nrow(bl))
+    bl
+}
+
+ssaBP_filt = parse_selfblast(blast.table=ssaBP, feat.table=ssaFeat_CDS)
+omyBP_filt = parse_selfblast(blast.table=omyBP, feat.table=omyFeat_CDS)
+
+
+```
+
+```{r make_BLASTP_homeolog_definition, echo=FALSE}
+
+######################################################
+# Produce homeo.table w/stringent filtering #
+######################################################
+
+
+# make a function that does the filtering ==> add cat's
+
+final_selfblast = function(selfblast_filt=ssaBP_filt, min.pident=80, min.cov=0.50){
+    bl = selfblast_filt
+    # remove low coverage hits..
+    bl.homeo = bl[bl$pident>=min.pident, ]
+    cat('\nBlast hits after filtering on min.pident =', min.pident, ':', nrow(bl.homeo))
+    bl.homeo = bl.homeo[bl.homeo$q.cov>=min.cov & bl.homeo$s.cov>=min.cov, ]
+    cat('\nBlast hits after filtering on bidirectional min.cov =', min.cov, ':', nrow(bl.homeo))
+    
+    #remove duplicated entries in sseqid/qseqid collumns
+    bl.homeo = arrange(bl.homeo, desc(bitscore))
+    bl.homeo = bl.homeo[!duplicated(bl.homeo$sseqid), ] # dup sseqid
+    bl.homeo = bl.homeo[!duplicated(bl.homeo$qseqid), ] # dup qseqid
+    cat('\nBlast hits after removing duplicated GenBank IDs:', nrow(bl.homeo))
+    
+    # find and remove proteins with multiple hits above threshold 
+    ## could be changed out with picking 'the best'..
+    multi.entries = as.numeric(na.omit(match(bl.homeo$qseqid, bl.homeo$sseqid))) 
+    if(length(multi.entries)>0) { bl.homeo <- bl.homeo[-multi.entries, ]} #
+    multi.entries2 = as.numeric(na.omit(match(bl.homeo$sseqid, bl.homeo$qseqid)))
+    if(length(multi.entries2)>0) { bl.homeo <- bl.homeo[-multi.entries2, ]} #
+    cat('\nBlast hits after removing GenBank IDs with multiple hits:', nrow(bl.homeo))
+    if(sum(bl.homeo$chr1 == bl.homeo$chr2)>0) {cat('Error - identical chromosomes in qseqid and sseqid'); break()} # SOMETHING WRING==> should BE ZERO!!!
+    bl.homeo
+    
+}
+
+ssa_ss4r_blastidentification_minpident80 = final_selfblast(selfblast_filt=ssaBP_filt, min.pident=80, min.cov=0.50)
+omy_ss4r_blastidentification_minpident80 = final_selfblast(selfblast_filt=omyBP_filt, min.pident=80, min.cov=0.50)
+write_delim(ssa_ss4r_blastidentification_minpident80,  delim = '\t', path = '~/Google Drive/Salmonid_genomics_resources/Orthologs_homeologs/Homeologs/Ssal_RefSeq_2017_Ss4R_ohnologs_blastidentification_minpident80.txt')
+write_delim(omy_ss4r_blastidentification_minpident80,  delim = '\t', path = '~/Google Drive/Salmonid_genomics_resources/Orthologs_homeologs/Homeologs/Omyk_RefSeq_2017_Ss4R_ohnologs_blastidentification_minpident80.txt')
+
+#
+```
+
+
+
+
+
+```{r read in newest orthogroup trees from orthofinder results folder}
+# # do below on cluster...
+# library(ape)
+# trees.files = dir('/mnt/project/AquaGenome/Analysis/2016-August-Orthofinder/orthofinder/Results-CIGOmykV6-20160819-Longest/Trees/', full.names = T)
+# 
+# # system('find /mnt/users/garethg/git/resam/orthogroups/orthofinder/Results/Trees_finished/ -type f > /mnt/users/srsand/Omyk/Ortholog_homeolog_annotation/Omyk_orthotrees.txt')
+# # trees.files = readLines('/mnt/users/srsand/Omyk/Ortholog_homeolog_annotation/Omyk_orthotrees.txt')
+# # head(trees.files)
+# # names(trees.files) <- sub('_tree.txt', '', basename(trees.files))
+# # head(trees.files)
+#  
+# trees.list.raw = lapply(trees.files, read.tree)
+# names(trees.list.raw) <- sub('_.*', '', basename((trees.files)))
+#   
+# length(trees.list.raw)
+# table(sapply(trees.list.raw, class))
+# 
+# 
+# ## must fix labels to only have species names + |
+# #1) Gareth sa at alle sekvenser m??tt navngies p?? en spesiell m??te, ikke sant? Noe slikt f.eks.: ???Gacu_Gacu|og-s??-proteinnavnet???
+# #2) I tr??rne som spyttes ut har alle ENSEMBL-gener denne prefixen (som gj??r det meget let ?? parse resultater)
+# #3) MEN: harr-gener ser slik ut: Tthy_Tthy_00047170-RA". Omyk navn ser slik ut: CIGOmyk_CIGENEomy.93046|Gene.335130"
+# 
+# ## HIT:
+# 
+# # use substring 6:1000 to get seq.names without species abbreviations..
+# trees.list = lapply(trees.list.raw, function(i) {
+#   tr = i 
+#   tr$tip.label = substr(tr$tip.label, 6, 1000 )
+#   tr$tip.label = sub('yk_', 'Omyk2|', tr$tip.label)
+#   tr
+#   })
+# 
+# #3 do some filtering of # taxa in trees?
+# 
+# # saving trees:
+# orthofinder_trees_with_CIGOmyk = trees.list
+# save(orthofinder_trees_with_CIGOmyk, file='/mnt/users/srsand/Omyk/Ortholog_homeolog_annotation/Orthofinder_trees_CIGOmykV6.RData')
+# 
+# #system('cp /mnt/users/srsand/Salmon/resam/Orthofinder_GarethJan2016.RData ~/Dropbox/Work/Projects/Fish/Orthogroups/Rdata/Orthofinder_trees_GarethJan2016.RData')
+
+```
+
+```{r make clans}
+# 
+# library(ape)
+# 
+# #source('/mnt/users/srsand/R_scripts/Rfunctions/clanfinder_v5.R') # not working properly
+# source('/mnt/users/srsand/R_scripts/Rfunctions/clanfinder_v3.R')
+# load('/mnt/users/srsand/Omyk/Ortholog_homeolog_annotation/Orthofinder_trees_CIGOmykV6.RData')
+# trees = orthofinder_trees_with_CIGOmyk; rm(orthofinder_trees_with_CIGOmyk)
+# 
+# # counting tips
+# tip.numbers = sapply(trees, function(i) length(i$tip.label))
+# table(tip.numbers)
+# length(tip.numbers)
+# 
+# # extracting trees with < 3 tips (4284) # must include these in the final table of orthogroups...
+# small_trees = trees[tip.numbers<3]
+# length(small_trees)
+# 
+# # extracting trees with < 3 tips (4284) # must include these in the final table of orthogroups...
+# large_trees = trees[tip.numbers>=300]
+# length(large_trees)
+# 
+# # removing trees with < 3
+# trees = trees[tip.numbers>=3 ]
+# tip.numbers = sapply(trees, function(i) length(i$tip.label))
+# length(trees)
+# length(tip.numbers)
+# 
+# # traer med faerre enn 300 tips - 9 f??rste tr??rne er ikke tatt med 1000-3xx tips
+# table(sapply(trees, function(i) length(i$tip.label)<300)) # very large trees > 300 seqs
+# trees = trees[tip.numbers<300]
+# length(trees)
+# 
+# # Tr??r med minst 3 inngruppe-arter
+# ingroup.numbers = sapply(trees, function(i) sum(!substring(i$tip.label, 1, 4) %in% c('Gacu', 'Olat', 'Drer', 'Hsap', 'Mmus')))
+# trees = trees[ingroup.numbers>=3]
+# length(trees)
+# 
+# # compare old and new seq's in trees
+# seq.counts = sapply(trees, function(i) {
+#   a = length(grep('Omyk|', i$tip.label, fixed=T))
+#   b = length(grep('Omyk2|', i$tip.label, fixed=T))
+#   c = length(grep('Ssal|', i$tip.label, fixed=T))
+#   c(a, b, c)
+# })
+# 
+# ### some stats comparing INRA and CIGENE ###
+# 
+# seq.counts[1:3, 1:4]
+# # total seqs included in orthotrees:
+# c(sum(seq.counts[2,])-sum(seq.counts[1,])) # 3890 more genes in CIGomyk compared to INRAomyk
+# 
+# table(seq.counts[1,] - seq.counts[2,] < 0) #  CIG annotation includes more genes than INRA
+# table(seq.counts[1,] - seq.counts[2,] == 0) #  CIG annotation includes SAME genes than INRA
+# table(seq.counts[1,] - seq.counts[2,] > 0) #  CIG annotation includes LESS genes than INRA
+# 
+# # annotation INRA vs ssal
+# table((seq.counts[1,] - seq.counts[3,]) == 0 )
+# table((seq.counts[1,] - seq.counts[3,]) != 0 )
+# 
+# # annotation CIGENE vs ssal
+# table((seq.counts[2,] - seq.counts[3,]) == 0 )
+# table((seq.counts[2,] - seq.counts[3,]) != 0 )
+# 
+# # Generally better in CIGENE but looks like many trees also looks 'better' with INRA --> artifact? 
+# table(seq.counts[2,] - seq.counts[3,] == 0 & seq.counts[1,] - seq.counts[3,] < 0) 
+# table(seq.counts[1,] - seq.counts[3,] == 0 & seq.counts[2,] - seq.counts[3,] < 0)
+# 
+# ## Have we really used the INRA genes to predict gene structures in V6
+# 
+# # what type of trees have more INRAgenes?
+# idx.moreInra = which(seq.counts[1,] - seq.counts[3,] >= 0 & seq.counts[2,] - seq.counts[3,] < 0)
+# 
+# idx.moreCige = which(seq.counts[2,] - seq.counts[3,] >= 0 & seq.counts[1,] - seq.counts[3,] < 0)
+# 
+# summary(sapply(trees[idx.moreInra], function(i) length(i$tip.label)))
+# summary(sapply(trees[idx.moreCige], function(i) length(i$tip.label))) # looks very similar
+# 
+# table(sapply(trees[idx.moreInra], function(i) length(i$tip.label)))
+# table(sapply(trees[idx.moreCige], function(i) length(i$tip.label)))
+# 
+# 
+# # run clanfinder on 18700 trees # tar 1 minutt
+# #clans = lapply(trees, clanFinder5, species.out=c('Gacu', 'Olat', 'Drer', 'Hsap', 'Mmus'), root=F)
+# clans = lapply(trees, clanFinder, ut=c('Gacu', 'Olat', 'Drer', 'Hsap', 'Mmus'))
+# names(clans) <- names(trees)
+# 
+# # remove empty clans
+# table(sapply(clans, length)>0) # why??
+# clans = clans[sapply(clans, length)>0] # remove trees with zero clans
+# table(sapply(clans, length)) # max 14 clans..
+# 
+# #rename clan's names
+# clan.names=list()
+# for(n in names(clans)){
+#   clan.names[[n]] <- paste(n, 1:length(clans[[n]]), sep='_')
+# }
+# 
+# table(sapply(clans, length) != sapply(clan.names, length))
+# 
+# # unlist clans
+# clans.list = unlist(clans, recursive=F)
+# names(clans.list) <- unlist(clan.names)
+# length(clans.list)
+# head(names(clans.list))
+# 
+# # sanity chack - these should look identical
+# table(sapply(clans, length)) # max 14 clans..
+# table(table(sapply(names(clans.list), function(i) sub('_.*', '', i)))) # max 14 clans..
+# 
+# clans_named = clans.list
+# head(names(clans.list))
+# #
+# # saving clans:
+# Orthofinder_trees_October2016_clanfinder_clans = clans_named
+# save(Orthofinder_trees_October2016_clanfinder_clans, file='/mnt/users/srsand/Omyk/Ortholog_homeolog_annotation/Orthofinder_trees_October2016_clanfinder_clans.RData')
+# #system('cp /mnt/users/srsand/Salmon/resam/Rdata/Orthofinder_trees_clanfinder_GarethJan2016.RData #~/Dropbox/Work/Projects/Fish/Orthogroups/Rdata/Orthofinder_trees_clanfinder_GarethJan2016.RData')
+
+```
+
+```{r rooting clans}
+# 
+# #source('~/Dropbox/Work/R-resources/Rfunctions/auto.root_salmonid_clans_v1.R')
+# #system('cp ~/Dropbox/Work/R-resources/Rfunctions/auto.root_salmonid_clans_v1.R #/mnt/users/srsand/Salmon/resam/Rfunctions/auto.root_salmonid_clans_v1.R')
+# source('/mnt/users/srsand/Salmon/resam/Rfunctions/auto.root_salmonid_clans_v1.R')
+# 
+# load('/mnt/users/srsand/Omyk/Ortholog_homeolog_annotation/Orthofinder_trees_October2016_clanfinder_clans.RData')
+# clans = Orthofinder_trees_October2016_clanfinder_clans; rm(Orthofinder_trees_October2016_clanfinder_clans)
+# 
+# # root with auto-root
+# clans.root.list = lapply(clans, auto.root)
+# clans.rooted = unlist(lapply(clans.root.list, '[', 1), recursive = F)
+# fail.info = unlist(sapply(clans.root.list, '[', 3))
+# root.info = unlist(sapply(clans.root.list, '[', 2))
+# 
+# table(fail.info) # root classification --> not sure that this is real...
+# table(root.info) # type of rooting's for clans..
+# table(root.info[fail.info==T]) # rooting that crashed
+# table(sapply(clans.rooted, class)) # all are phylo
+# 
+# is.identical = c()
+# for(i in 1:length(clans)){
+#   is.identical[i] <- all.equal(clans[[i]]$tip.labels, clans.rooted[[i]]$tip.labels)
+# }
+# table(is.identical) # same tips in trees...so it looks ok
+# 
+# par(mfrow=c(1,2))
+# plot(clans[[10000]])
+# plot(clans.rooted[[10000]])
+# 
+# names(clans.rooted)[fail.info] <- sub('rooted', 'original', names(clans.rooted)[fail.info])
+# Orthofinder_trees_October2016_clanfinder_clans_rooted <- clans.rooted
+# save(Orthofinder_trees_October2016_clanfinder_clans_rooted, file='/mnt/users/srsand/Omyk/Ortholog_homeolog_annotation/Orthofinder_trees_October2016_clanfinder_clans_rooted.RData')
+# #system('cp /mnt/users/srsand/Salmon/resam/Rdata/Orthofinder_trees_clanfinder_rooted_GarethJan2016.RData #~/Dropbox/Work/Projects/Fish/Orthogroups/Rdata/Orthofinder_trees_clanfinder_rooted_GarethJan2016.RData')
+# 
+
+```
+
+```{r make lookup from clans and non-clans}
+# library(ape)
+# #load clans
+# load('/mnt/users/srsand/Omyk/Ortholog_homeolog_annotation/Orthofinder_trees_October2016_clanfinder_clans.RData')#
+# clans = Orthofinder_trees_October2016_clanfinder_clans; rm(Orthofinder_trees_October2016_clanfinder_clans)
+# 
+# #load trees
+# load('/mnt/users/srsand/Omyk/Ortholog_homeolog_annotation/Orthofinder_trees_CIGOmykV6.RData')
+# trees = orthofinder_trees_with_CIGOmyk; rm(orthofinder_trees_with_CIGOmyk)
+# 
+# 
+# # make two tables --> merge on OG and filter duplicated hits
+# 
+# # clan table:
+# names(clans) <- paste(names(clans), '.', sep='')
+# info  = unlist(sapply(clans, function(i) i$tip.label))
+# info = sub('Tthy_', 'Tthy|', info)
+# OG = sapply(strsplit(names(info), '_'), '[', 1)
+# CLAN = sapply(strsplit(names(info), '\\.'), '[', 1)
+# TIPS= as.character(info)
+# PROTEIN = sapply(strsplit(sub('gb\\|', '', as.character(info)), '\\|'), '[', 2)
+# SPECIES = sapply(strsplit(as.character(info), '\\|'), '[', 1)
+# clans.df = data.frame(orthogroup=OG, orthogroup.clan=CLAN, protein=PROTEIN, species=SPECIES, tree.tip.label=TIPS, stringsAsFactors = F)
+# head(clans.df, 100)
+# table(nchar(OG))
+# 
+# # orthogroup table
+# info  = unlist(sapply(trees, function(i) i$tip.label))
+# info = sub('Tthy_', 'Tthy|', info)
+# OG = substr(sapply(strsplit(names(info), '_'), '[', 1), 1,9)
+# CLAN = rep(NA, length(OG))
+# TIPS= as.character(info)
+# PROTEIN = sapply(strsplit(sub('gb\\|', '', as.character(info)), '\\|'), '[', 2)
+# SPECIES = sapply(strsplit(as.character(info), '\\|'), '[', 1)
+# orthogroups.df = data.frame(orthogroup=OG, orthogroup.clan=CLAN, protein=PROTEIN, species=SPECIES, tree.tip.label=TIPS, stringsAsFactors = F)
+# head(orthogroups.df, 100)
+# table(nchar(OG))
+# 
+# # combine OG and clan table 
+# lookup = rbind(orthogroups.df, clans.df)
+# lookup = lookup[order(lookup$orthogroup.clan), ]
+# lookup = lookup[!duplicated(lookup$protein), ]
+# 
+# # sanity chek's
+# table(lookup$species)
+# sum(sapply(trees, function(i) length(grep('Ssal', i$tip.label)))) # same  number as in lookup
+# 
+# # sanity chek's
+# sum(sapply(clans, function(i) length(grep('Ssal', i$tip.label))))
+# table(lookup$species[!is.na(lookup$orthogroup.clan)])
+# 
+# # changing NA to 'xxxx_0' in orthogroup.clan collumn
+# lookup$orthogroup.clan[is.na(lookup$orthogroup.clan)] <- paste(lookup$orthogroup[is.na(lookup$orthogroup.clan)], '_0', sep='')
+
+```
+
+
+
+```{r add homeologs to lookup}
+
+###########
+########
+#####
+###
+## har kommet hit!!!!
+
+### KOMMET HIT!!!!!
+
+load('/mnt/users/srsand/Salmon/resam/Rdata/Lookup_table_Orthofinder_trees_and_clans_GarethMarch2016.Rdata')
+load('/mnt/users/srsand/Salmon/resam/Rdata/RefSeq_GarethLongest_2016_best_in_homelogRegions_minpident80_mincov50.RData')
+lookup$putative_blastp_homeolog <- NA
+head(lookup)
+
+sseqid_homeo.idx <- match(lookup$protein, putative_homeologs_pepblast$sseqid)
+qseqid_homeo.idx <- match(lookup$protein, putative_homeologs_pepblast$qseqid)
+head(lookup)
+lookup$putative_blastp_homeolog[!is.na(sseqid_homeo.idx)] <- na.omit(putative_homeologs_pepblast$qseqid[sseqid_homeo.idx])
+lookup$putative_blastp_homeolog[!is.na(qseqid_homeo.idx)] <- na.omit(putative_homeologs_pepblast$sseqid[qseqid_homeo.idx])
+head(lookup)
+
+# Ss4R blast vs ortholog tree stats
+tree.stat = table(lookup$orthogroup[match(putative_homeologs_pepblast$qseqid, lookup$protein)] == lookup$orthogroup[match(putative_homeologs_pepblast$sseqid, lookup$protein)], useNA = 'always') 
+as.numeric(round(tree.stat[3]/sum(tree.stat)*100, 2)) # 306/10752 Ss4R pairs with >=1 dup not in any tree
+as.numeric(round(tree.stat[1]/sum(tree.stat)*100, 2)) # 85/10752 Ss4R dups in different trees (0.8%)
+as.numeric(round((1-(sum(tree.stat[c(1,3)])/sum(tree.stat)))*100, 2)) # 1-((306+85)/10752) --> 96% Ss4R blast-dups in same tree
+
+# Ss4R blast vs ortholog clan stats
+clan.stat = table(lookup$orthogroup.clan[match(putative_homeologs_pepblast$qseqid, lookup$protein)] == lookup$orthogroup.clan[match(putative_homeologs_pepblast$sseqid, lookup$protein)], useNA = 'always')
+as.numeric(round(clan.stat[3]/sum(clan.stat)*100, 2)) # % Ss4R pairs with >=1 dup not in any tree
+as.numeric(round(clan.stat[1]/sum(clan.stat)*100, 2)) # % Ss4R dups in different clans
+as.numeric(round((1-(sum(clan.stat[c(1,3)])/sum(clan.stat)))*100, 2)) # Ss4R blast-dups in same clan
+
+same.clan.idx = lookup$orthogroup.clan[match(putative_homeologs_pepblast$qseqid, lookup$protein)] == lookup$orthogroup.clan[match(putative_homeologs_pepblast$sseqid, lookup$protein)] 
+putative_homeologs_pepblast$same.clan <- same.clan.idx
+
+
+save(lookup, file='~/Dropbox/Work/Projects/Fish/Orthogroups/Rdata/Lookup_table_Orthofinder_trees_and_clans_GarethMarch2016.Rdata')
+system('cp ~/Dropbox/Work/Projects/Fish/Orthogroups/Rdata/Lookup_table_Orthofinder_trees_and_clans_GarethMarch2016.Rdata /mnt/users/srsand/Salmon/resam/Rdata/Lookup_table_Orthofinder_trees_and_clans_GarethMarch2016.Rdata')
+ 
+save(putative_homeologs_pepblast, file='/mnt/users/srsand/Salmon/resam/Rdata/RefSeq_GarethLongest_2016_best_in_homelogRegions_minpident80_mincov50.RData')
+
+```
+
+
+```{r fix collumn names and add NCBI-locus to homeolog table }
+
+# fix unique collumn names
+
+head(putative_homeologs_pepblast)
+colnames(putative_homeologs_pepblast)[18:20] <- paste(colnames(putative_homeologs_pepblast)[18:20], '_qseqid', sep='')
+colnames(putative_homeologs_pepblast)[21:23] <- paste(colnames(putative_homeologs_pepblast)[21:23], '_sseqid', sep='')
+head(putative_homeologs_pepblast)
+
+
+table(is.na(match(putative_homeologs_pepblast$qseqid, GB$gene_id)))
+table(is.na(match(putative_homeologs_pepblast$sseqid, GB$gene_id)))
+
+putative_homeologs_pepblast$qseqid_NCBI <- GB$gene_id[match(putative_homeologs_pepblast$qseqid, GB$gene_id)]
+putative_homeologs_pepblast$sseqid_NCBI <-GB$gene_id[match(putative_homeologs_pepblast$sseqid, GB$gene_id)]
+head(putative_homeologs_pepblast)
+
+save(putative_homeologs_pepblast, file='/mnt/users/srsand/Salmon/resam/Rdata/RefSeq_GarethLongest_2016_best_in_homelogRegions_minpident80_mincov50.RData')
+
+system('cp /mnt/users/srsand/Salmon/resam/Rdata/RefSeq_GarethLongest_2016_best_in_homelogRegions_minpident80_mincov50.RData ~/Dropbox/Work/Projects/Fish/Orthogroups/Rdata/RefSeq_GarethLongest_2016_best_in_homelogRegions_minpident80_mincov50.RData')
+ 
+
+```
+
+
+
+
+
+```{r add closest ZF}
+
+########### DELETE???
+
+library(ape);library(plyr)
+
+getClosestDrer=function(tree=tr, compare.species='Ssal'){
+  nodrer = length(grep('Drer', tree$tip.label))<1
+  nossal = length(grep('Ssal', tree$tip.label))<1
+  if(sum(c(nossal, nodrer))==2)  return(data.frame(ssal='No_Ssal', drer='No_Drer')) 
+  if(nodrer) return(data.frame(ssal=grep('Ssal', tree$tip.label, value=T), drer='No_Drer'))
+  if(nossal) return(data.frame(ssal='No_Ssal', drer=grep('Drer', tree$tip.label, value=T)))
+  else { cp = cophenetic.phylo(x = tree)
+         ssal = grep('Ssal', colnames(cp), value=T)
+         drer = grep('Drer', colnames(cp), value=T)
+         if(length(drer)==1) {
+           mindist = cp[drer,]
+           return(data.frame(ssal=names(mindist[grep('Ssal', names(mindist))]), drer=drer))
+           }
+         if(length(drer)>1&length(ssal)==1) {
+            mindist = cp[ssal,]
+            return(data.frame(ssal=ssal, drer=names(mindist[grep('Drer', names(mindist))])))
+        }
+         if(length(drer)>1) {
+           cp 
+           mindist = apply(sapply(drer, function(i) cp[ssal,i]), 1, function(i) which(i == min(i))[1]) # pick random closest if several...
+            return(data.frame(ssal=names(mindist), drer=drer[mindist]))
+        }
+    }
+}
+
+# get closest ZF gene --> random if two equally close
+clans.closest = ldply(lapply(clans, getClosestDrer), function(i) i)
+clans.closest <- clans.closest[clans.closest$ssal!='No_Ssal', ] # remove no ssal sequence rows
+length(unique(clans.closest$ssal)) # correct number 
+
+trees.closest = ldply(lapply(trees, getClosestDrer), function(i) i)
+length(unique(trees.closest$ssal)) # correct number 
+length(unique(trees.closest$ssal[trees.closest$drer != 'No_Drer'])) # this many ssal with a drer closest
+
+## HIT:
+## need to combine clans and trees closest..and then remove all rows with a ssal gene from a clan that has no ZF
+
+# only clans with drer
+clans.drer = clans.closest[clans.closest$drer != 'No_Drer', ]
+dim(clans.drer)
+clans.drer$added.drer <- rep(F, nrow(clans.drer))
+clans.drer$.id <- sub('\\.', '', clans.drer$.id)
+colnames(clans.drer)[1] <- 'clans'
+orthogroups = sapply(strsplit(clans.drer$clans, '_'), '[', 1)
+clans.drer = data.frame(orthogroups=orthogroups,clans.drer)
+head(clans.drer)
+dim(clans.drer)
+
+# only ssal seqs without drer in clans
+clans.nodrer = clans.closest[clans.closest$drer == 'No_Drer', ]
+dim(clans.nodrer)
+head(clans.nodrer)
+clans.nodrer$drer <- trees.closest$drer[match(clans.nodrer$ssal, trees.closest$ssal)]
+clans.nodrer$added.drer <- rep(TRUE, nrow(clans.nodrer))
+clans.nodrer$.id <- sub('\\.', '', clans.nodrer$.id)
+colnames(clans.nodrer)[1] <- 'clans'
+orthogroups = sapply(strsplit(clans.nodrer$clans, '_'), '[', 1)
+clans.nodrer = data.frame(orthogroups=orthogroups,clans.nodrer)
+table(clans.nodrer$added.drer)
+head(clans.nodrer)
+dim(clans.nodrer)
+
+# combine clandata:
+all.clans = rbind(clans.drer, clans.nodrer)
+all.clans = all.clans[!duplicated(all.clans$ssal), ]
+
+# only ssal with no_clan drer hits
+trees.drer = trees.closest[trees.closest$drer != 'No_Drer', ]
+dim(trees.drer)
+trees.drer.notinclans = trees.drer[!trees.drer$ssal %in% all.clans$ssal, ]
+dim(trees.drer.notinclans)
+trees.drer.notinclans$added.drer <- rep(F, nrow(trees.drer.notinclans))
+head(trees.drer.notinclans)
+orthogroups = sub('_tree.txt', '', trees.drer.notinclans$.id)
+trees.drer.notinclans$.id <- 'no_clan'
+colnames(trees.drer.notinclans)[1] <- 'clans'
+trees.drer.notinclans = data.frame(orthogroups=orthogroups,trees.drer.notinclans)
+head(trees.drer.notinclans)
+dim(trees.drer.notinclans)
+
+# combine clans and no_clan closest:
+closest.drer = rbind(all.clans, trees.drer.notinclans)
+closest.drer  = closest.drer[!duplicated(closest.drer$ssal), ] # 40210 ssal genes with a ZF ortholog in same gene tree
+closest.drer = closest.drer[closest.drer$drer != 'No_Drer', ]
+
+#QC:
+# number of ssal genes with ZF ortholog in combined tables are the same as total ssal orthologs in all trees...
+nrow(closest.drer) == length(unique(trees.closest$ssal[trees.closest$drer != 'No_Drer']))
+# 37945 ssal with ZF ortholog in all trees...
+
+
+```
+
+```{r NEW lookup - combine gff with lookup and clostest zebra }
+# 
+# lookup$closest.drer = closest.drer$drer[match(lookup$tree.tip.label, closest.drer$ssal)]
+# lookup$closest.drer.notinclan = closest.drer$added.drer[match(lookup$tree.tip.label, closest.drer$ssal)]
+# head(GB[match(lookup$protein, GB$gene_id), -2])
+# lookup_gff = data.frame(lookup, GB[match(lookup$protein, GB$gene_id), -2], stringsAsFactors = F)
+# lookup_gff = lookup_gff[order(lookup_gff$orthogroup), ]
+# lookup_gff$closest.drer.notinclan[grep('_0', lookup_gff$orthogroup.clan)] <- NA
+# dim(lookup_gff); dim(lookup)
+# lookup <- lookup_gff
+# save(lookup, file='~/Dropbox/Work/Projects/Fish/Orthogroups/Rdata/Lookup_table_Orthofinder_trees_and_clans_GarethMarch2016.Rdata')
+# system('cp ~/Dropbox/Work/Projects/Fish/Orthogroups/Rdata/Lookup_table_Orthofinder_trees_and_clans_GarethMarch2016.Rdata /mnt/users/srsand/Salmon/resam/Rdata/Lookup_table_Orthofinder_trees_and_clans_GarethMarch2016.Rdata')
+#  
+```
+
+
+
+
+
+
+
+
+
+
+
+
